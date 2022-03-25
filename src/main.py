@@ -5,19 +5,14 @@ import logging
 from functools import wraps
 from typing import Tuple
 from telegram import (
-    InlineQueryResultArticle,
-    InputTextMessageContent,
-    Message,
     Update,
     Bot,
     BotCommand,
-    ParseMode,
 )
 from telegram.ext import (
     Updater,
     CommandHandler,
     MessageHandler,
-    InlineQueryHandler,
     Filters,
     CallbackContext,
     JobQueue,
@@ -28,9 +23,9 @@ from telegram.utils.helpers import effective_message_type
 
 import commands
 from guidebook import Guidebook
-from knowledge import search
 
-# Enable logging
+from src.reminders import reminder
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -53,12 +48,7 @@ THUMB_URL = env.get(
     "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/Flag_of_Ukraine.svg/2560px-Flag_of_Ukraine.svg.png",
 )
 
-REMINDER_MESSAGE = "I WILL POST PINNED MESSAGE HERE"
-REMINDER_INTERVAL_PINNED = 30 * 60
-REMINDER_INTERVAL_INFO = 10 * 60
-PINNED_JOB = "pinned"
-SOCIAL_JOB = "social"
-JOBS_NAME = [PINNED_JOB, SOCIAL_JOB]
+
 ADMIN_ONLY_CHAT_IDS = [-1001723117571, -735136184]
 
 BERLIN_HELPS_UKRAIN_CHAT_ID = [-1001589772550, -1001790676165, -735136184]
@@ -110,27 +100,6 @@ def restricted_general(func):
     return wrapped
 
 
-def send_social_reminder(bot: Bot, job: Job):
-    """send_reminder"""
-    chat_id = job.context
-    logger.info("Sending a social reminder to chat %s", chat_id)
-    results = commands.social_help()
-    bot.send_message(chat_id=chat_id, text=results, disable_web_page_preview=True)
-
-
-def send_pinned_reminder(bot: Bot, job: Job):
-    """send_reminder"""
-    chat_id = job.context
-    chat = bot.get_chat(chat_id)
-    msg: Message = chat.pinned_message
-    logger.info("Sending pinned message to chat %s", chat_id)
-
-    if msg:
-        bot.forward_message(chat_id, chat_id, msg.message_id)
-    else:
-        bot.send_message(chat_id=chat_id, text=REMINDER_MESSAGE)
-
-
 def delete_greetings(bot: Bot, update: Update) -> None:
     """Echo the user message."""
     message = update.message
@@ -172,55 +141,6 @@ def admins_only_revert(bot: Bot, update: Update):
     bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
 
 
-def reminder(bot: Bot, update: Update, job_queue: JobQueue):
-    chat_id = update.message.chat_id
-    logger.info("Started reminders in channel %s", chat_id)
-
-    jobs: Tuple[Job] = job_queue.get_jobs_by_name(
-        PINNED_JOB
-    ) + job_queue.get_jobs_by_name(SOCIAL_JOB)
-
-    #  Restart already existing jobs
-    for job in jobs:
-        if not job.enabled:
-            job.enabled = True
-
-    # Start a new job if there was none previously
-    if not jobs:
-        add_pinned_reminder_job(bot, update, job_queue)
-        add_info_job(bot, update, job_queue)
-
-
-def add_pinned_reminder_job(bot: Bot, update: Update, job_queue: JobQueue):
-    chat_id = update.message.chat_id
-    bot.send_message(
-        chat_id=chat_id,
-        text=f"I'm starting sending the pinned reminder every {REMINDER_INTERVAL_PINNED}s.",
-    )
-    job_queue.run_repeating(
-        send_pinned_reminder,
-        REMINDER_INTERVAL_PINNED,
-        first=1,
-        context=chat_id,
-        name=PINNED_JOB,
-    )
-
-
-def add_info_job(bot: Bot, update: Update, job_queue: JobQueue):
-    chat_id = update.message.chat_id
-    bot.send_message(
-        chat_id=chat_id,
-        text=f"I'm starting sending the info reminder every {REMINDER_INTERVAL_INFO}s.",
-    )
-    job_queue.run_repeating(
-        send_social_reminder,
-        REMINDER_INTERVAL_INFO,
-        first=1,
-        context=chat_id,
-        name=SOCIAL_JOB,
-    )
-
-
 @restricted
 def stop_timer(bot: Bot, update: Update, job_queue: JobQueue):
     """stop_timer"""
@@ -233,26 +153,6 @@ def stop_timer(bot: Bot, update: Update, job_queue: JobQueue):
         job.enabled = False
 
     logger.info("Stopped reminders in channel %s", chat_id)
-
-
-def find_replies(update: Update) -> None:
-    """Handle the inline query."""
-    query = update.inline_query.query
-
-    replies = search(query)
-    results = [
-        InlineQueryResultArticle(
-            id=r.id,
-            title=r.title,
-            input_message_content=InputTextMessageContent(
-                r.content, parse_mode=ParseMode.MARKDOWN
-            ),
-            thumb_url=THUMB_URL,
-        )
-        for r in replies
-    ]
-
-    update.inline_query.answer(results)
 
 
 def reply_to_message(bot, update, reply, disable_web_page_preview=True):
@@ -611,9 +511,6 @@ def main() -> None:
 
     # Messages
     dispatcher.add_handler(MessageHandler(Filters.all, delete_greetings))
-
-    # Inlines
-    dispatcher.add_handler(InlineQueryHandler(find_replies))
 
     if APP_NAME == "TESTING":
         updater.start_polling()
